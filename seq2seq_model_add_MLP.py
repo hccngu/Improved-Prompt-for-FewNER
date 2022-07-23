@@ -162,9 +162,9 @@ class Seq2SeqModel:
         else:
             config_class, model_class, tokenizer_class = MODEL_CLASSES[encoder_type]
 
-        if encoder_decoder_type in ["bart", "marian", "blender", "blender-large"]:
+        if encoder_decoder_type in ["bart", "bart2decoder", "marian", "blender", "blender-large"]:
             self.model = model_class.from_pretrained(encoder_decoder_name)
-            if encoder_decoder_type in ["bart", "blender", "blender-large"]:
+            if encoder_decoder_type in ["bart", "bart2decoder", "blender", "blender-large"]:
                 self.encoder_tokenizer = tokenizer_class.from_pretrained(encoder_decoder_name)
                 # self.encoder_tokenizer = tokenizer_class.from_pretrained(encoder_decoder_name, additional_special_tokens=['__defi__', '__sim__'])
                 # self.model.resize_token_embeddings(len(self.encoder_tokenizer))
@@ -925,7 +925,7 @@ class Seq2SeqModel:
                 )["input_ids"]
             input_ids = input_ids.to(self.device)
 
-            if self.args.model_type in ["bart", "marian", "blender", "blender-large"]:
+            if self.args.model_type in ["bart", "bart2decoder", "marian", "blender", "blender-large"]:
 
                 outputs = self.model.generate(
                     input_ids=input_ids,
@@ -1012,7 +1012,7 @@ class Seq2SeqModel:
                 )["input_ids"]
             input_ids = input_ids.to(self.device)
 
-            if self.args.model_type in ["bart", "marian", "blender", "blender-large"]:
+            if self.args.model_type in ["bart", "bart2decoder", "marian", "blender", "blender-large"]:
                 outputs = self.model.generate(
                     input_ids=input_ids,
                     num_beams=self.args.num_beams,
@@ -1132,7 +1132,7 @@ class Seq2SeqModel:
             CustomDataset = args.dataset_class
             return CustomDataset(encoder_tokenizer, decoder_tokenizer, args, data, mode)
         else:
-            if args.model_type in ["bart", "marian", "blender", "blender-large"]:
+            if args.model_type in ["bart", "bart2decoder", "marian", "blender", "blender-large"]:
                 return SimpleSummarizationDataset(encoder_tokenizer, self.args, data, mode)
             else:
                 return Seq2SeqDataset(encoder_tokenizer, decoder_tokenizer, self.args, data, mode,)
@@ -1169,11 +1169,11 @@ class Seq2SeqModel:
             model_to_save = model.module if hasattr(model, "module") else model
             self._save_model_args(output_dir)
 
-            if self.args.model_type in ["bart", "marian", "blender", "blender-large"]:
+            if self.args.model_type in ["bart", "bart2decoder", "marian", "blender", "blender-large"]:
                 os.makedirs(os.path.join(output_dir), exist_ok=True)
                 model_to_save.save_pretrained(output_dir)
                 self.config.save_pretrained(output_dir)
-                if self.args.model_type in ["bart", "blender", "blender-large"]:
+                if self.args.model_type in ["bart", "bart2decoder", "blender", "blender-large"]:
                     self.encoder_tokenizer.save_pretrained(output_dir)
             else:
                 os.makedirs(os.path.join(output_dir, "encoder"), exist_ok=True)

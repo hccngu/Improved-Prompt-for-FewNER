@@ -6,7 +6,7 @@ import numpy as np
 import logging
 import argparse
 from utils_metrics import get_entities_bio, f1_score, classification_report
-from transformers import BartForConditionalGeneration, BartTokenizer, BartConfig
+from transformers import BartForConditionalGeneration, BartTokenizer, BartConfig, TrainingArguments
 import torch
 import torch.nn as nn
 import time
@@ -36,7 +36,10 @@ def prediction(input_TXT, template_list, entity_dict, tokenizer, model, device, 
             words.append([word])
 
         for w in words:
-            entity = template_entity(w, input_TXT, i, template_list, entity_dict, tokenizer, model, device, args, mlp, CM) #[start_index,end_index,label,score, score_list]
+            if args.encoder_decoder_type == 'bart2decoder':
+                entity = binary_template_entity(w, input_TXT, i, template_list, entity_dict, tokenizer, model, device, args, mlp, CM) #[start_index,end_index,label,score, score_list]
+            else:
+                entity = template_entity(w, input_TXT, i, template_list, entity_dict, tokenizer, model, device, args, mlp, CM) #[start_index,end_index,label,score, score_list]
             if entity[1] >= len(input_TXT_list):
                 entity[1] = len(input_TXT_list)-1
             if entity[2] != 'O':
@@ -66,6 +69,8 @@ def prediction(input_TXT, template_list, entity_dict, tokenizer, model, device, 
         temp.append(entity[2])
         temp.append(entity[3])
         temp.append(entity[4])
+        if len(entity) >= 6:
+            temp.append(entity[5])
         pred_logits.append(temp)
 
     
@@ -100,13 +105,14 @@ def template_entity(words, input_TXT, start, template_list, entity_dict, tokeniz
     else:
         raise NotImplementedError
     
-    if args.dataset == 'mit_m.10_shot':
-        output_length_list[10] += 1
-    elif args.dataset == 'MIT_MM':
-        output_length_list[10] += 1
-        output_length_list[17] += 1
-    elif args.dataset == 'MIT_R':
-        output_length_list[3] += 1
+    if args.encoder_decoder_type is not 'bart2decoder':
+        if args.dataset == 'mit_m.10_shot':
+            output_length_list[10] += 1
+        elif args.dataset == 'MIT_MM':
+            output_length_list[10] += 1
+            output_length_list[17] += 1
+        elif args.dataset == 'MIT_R':
+            output_length_list[3] += 1
 
     score = [1]*num_label*words_length
     with torch.no_grad():
@@ -152,6 +158,127 @@ def template_entity(words, input_TXT, start, template_list, entity_dict, tokeniz
     return [start, end, entity_dict[(norm_score.index(max(norm_score))%num_label)], max(norm_score), norm_score]  # , mlp_logits.cpu().numpy().tolist()]  #[start_index,end_index,label,score,[score_list],[mlp_logits]]
 
 
+def binary_template_entity(words, input_TXT, start, template_list, entity_dict, tokenizer, model, device, args, mlp=None, CM=None):
+    words_length = len(words)
+    
+    # binary_template
+    binary_template_list = ['{} is an entity', '{} is not an entity']
+    binary_entity_dict = {0: 'entity', 1: 'O'}
+    binary_num_label = len(binary_template_list)
+    binary_temp_list = []
+    for i in range(words_length):
+        for j in range(len(binary_template_list)):
+            binary_temp_list.append(binary_template_list[j].format(words[i]))
+
+    binary_output_ids = tokenizer(binary_temp_list, return_tensors='pt', padding=True, truncation=True)['input_ids']
+    # output_ids[:, 0] = 2  # 为什么变成2
+    binary_output_length_list = [0]*binary_num_label*words_length
+
+    if args.te == 'te1':
+        for i in range(len(binary_temp_list)//binary_num_label):
+            binary_base_length = ((tokenizer(binary_temp_list[i * binary_num_label], return_tensors='pt', padding=True, truncation=True)['input_ids']).shape)[1] - 2  # 为什么-4
+            binary_output_length_list[i*binary_num_label:i*binary_num_label+ binary_num_label] = [binary_base_length]*binary_num_label
+            binary_output_length_list[i*binary_num_label+binary_num_label-1] += 1
+    else:
+        raise NotImplementedError
+
+    # input text -> template
+    num_label = len(template_list)
+    # words_length_list = [len(i) for i in words]
+    input_TXT = [input_TXT]*(num_label*words_length)
+
+    input_ids = tokenizer(input_TXT, return_tensors='pt')['input_ids']
+    model.to(device)
+    
+    
+    temp_list = []
+    for i in range(words_length):
+        for j in range(len(template_list)):
+            temp_list.append(template_list[j].format(words[i]))
+
+    output_ids = tokenizer(temp_list, return_tensors='pt', padding=True, truncation=True)['input_ids']
+    # output_ids[:, 0] = 2  # 为什么变成2
+    output_length_list = [0]*num_label*words_length
+
+    if args.te == 'te1':
+        for i in range(len(temp_list)//num_label):
+            base_length = ((tokenizer(temp_list[i * num_label], return_tensors='pt', padding=True, truncation=True)['input_ids']).shape)[1] - 2  # 为什么-4
+            output_length_list[i*num_label:i*num_label+ num_label] = [base_length]*num_label
+            output_length_list[i*num_label+num_label-1] += 1
+    else:
+        raise NotImplementedError
+    
+    if args.dataset == 'mit_m.10_shot':
+        output_length_list[10] += 1
+    elif args.dataset == 'MIT_MM':
+        output_length_list[10] += 1
+        output_length_list[17] += 1
+    elif args.dataset == 'MIT_R':
+        output_length_list[3] += 1
+
+    binary_score = [1]*binary_num_label*words_length
+    score = [1]*num_label*words_length
+    with torch.no_grad():
+        origin_output = model(input_ids=input_ids.to(device), decoder_input_ids=output_ids[:, :output_ids.shape[1] - 2].to(device), binary_decoder_input_ids=binary_output_ids[:, :binary_output_ids.shape[1] - 2].to(device), output_hidden_states=True, Training=False)
+        output = origin_output[0]
+        binary_output = origin_output[1]
+        for i in range(output_ids.shape[1] - 2):  # 为什么-3
+            # print(input_ids.shape)
+            logits = output[:, i, :]
+            logits = logits.softmax(dim=1)
+            # values, predictions = logits.topk(1,dim = 1)
+            logits = logits.to('cpu').numpy()
+            # print(output_ids[:, i+1].item())
+            for j in range(0, num_label*words_length):
+                if i < output_length_list[j]:
+                    score[j] = score[j] * logits[j][int(output_ids[j][i + 1])]
+        
+        for i in range(binary_output_ids.shape[1] - 2):  # 为什么-3
+            # print(input_ids.shape)
+            binary_logits = binary_output[:, i, :]
+            binary_logits = binary_logits.softmax(dim=1)
+            # values, predictions = logits.topk(1,dim = 1)
+            binary_logits = binary_logits.to('cpu').numpy()
+            # print(output_ids[:, i+1].item())
+            for j in range(0, binary_num_label*words_length):
+                if i < binary_output_length_list[j]:
+                    binary_score[j] = binary_score[j] * binary_logits[j][int(binary_output_ids[j][i + 1])]
+
+    end = start + (len(words[0].split())-1)
+    # add mlp
+    if args.use_mlp_or_not == True:
+        mlp.to(device)
+        input_mlp = origin_output.decoder_hidden_states[-1][0, (len(words[0].split())-1), :]
+        mlp_logits = mlp(input_mlp)
+        # without_O_mlp_logits = 0
+        # O_mlp_logit = 0
+        norm_score = (score-min(score))/(max(score)-min(score))
+        norm_score = F.softmax(torch.tensor(norm_score)).numpy()
+        if np.argmax(norm_score) != (norm_score.shape[0]-1):
+            norm_score[:-1] = norm_score[:-1] * mlp_logits[1].item()
+            norm_score[-1] *= mlp_logits[0].item()
+        norm_score = norm_score.tolist()
+    else:
+        if binary_score[0] >= binary_score[1]:
+            norm_score = score
+            return [start, end, entity_dict[(norm_score.index(max(norm_score))%num_label)], max(norm_score), norm_score, binary_score]  # , mlp_logits.cpu().numpy().tolist()]  #[start_index,end_index,label,score,[score_list],[mlp_logits]]
+        else:
+            norm_score = score
+            return [start, end, 'O', max(norm_score), norm_score, binary_score]  # , mlp_logits.cpu().numpy().tolist()]  #[start_index,end_index,label,score,[score_list],[mlp_logits]]
+
+        
+        # if args.use_cm_or_not == True and CM is not None:
+        #     norm_score = torch.tensor(norm_score)
+        #     norm_score = torch.mul(norm_score, CM)
+        #     norm_score = norm_score.numpy().tolist()
+    
+        # score_list.append(score)
+    # s_lst = norm_score[(norm_score.index(max(norm_score))//5)*5:(norm_score.index(max(norm_score))//5)*5+5]
+    # norm_s_lst = (s_lst-min(s_lst))/(max(s_lst)-min(s_lst))
+    return [start, end, entity_dict[(norm_score.index(max(norm_score))%num_label)], max(norm_score), norm_score]  # , mlp_logits.cpu().numpy().tolist()]  #[start_index,end_index,label,score,[score_list],[mlp_logits]]
+
+
+
 def cal_time(since):
     now = time.time()
     s = now - since
@@ -168,6 +295,9 @@ def test(examples, template_list, entity_dict, tokenizer, model, device, args, m
     num_01 = len(examples)
     num_point = 0
     start = time.time()
+    # if args.encoder_decoder_type == 'bart2decoder':
+        # entity_dict.pop(len(template_list)-1)
+        # template_list = template_list[:-1]
     for example in examples:
         sources = string.join(example.words)
         words = sources.strip().split(' ')

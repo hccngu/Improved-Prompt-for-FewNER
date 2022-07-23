@@ -106,81 +106,80 @@ def set_template(dataset_name, te):
     if dataset_name == 'cnoll2003':
         entity_dict = {0: 'LOC', 1: 'PER', 2: 'ORG', 3: 'MISC', 4: 'O'}
         if te == 'te1':
-            template_list = ["{} is a location entity .", "{} is a person entity .", "{} is an organization entity .",
-                                "{} is an other entity .", "{} is not a named entity ."]
+            template_list = ["{} is a location entity", "{} is a person entity", "{} is an organization entity",
+                                "{} is an other entity", "{} is not a named entity"]
         elif te == 'te2':
             template_list = ["The entity type of {} is location","The entity type of {} is person",
                                 "The entity type of {} is organization","The entity type of {} is other","The entity type of {} is none entity"]
         elif te == 'te3':
-            template_list = ["{} belongs to location category .",
-                            " {} belongs to person category .", 
-                            " {} belongs to organization category .",
-                            " {} belongs to other category .", 
-                            " {} belongs to none category ."]
+            template_list = ["{} belongs to location category",
+                            " {} belongs to person category", 
+                            " {} belongs to organization category",
+                            " {} belongs to other category", 
+                            " {} belongs to none category"]
         elif te == 'te4':
-            template_list = ["{} should be tagged as location .",
-                            "{} should be tagged as person .", 
-                            "{} should be tagged as organization .",
-                            "{} should be tagged as other .", 
-                            "{} should tagged as none entity ."]
+            template_list = ["{} should be tagged as location",
+                            "{} should be tagged as person", 
+                            "{} should be tagged as organization",
+                            "{} should be tagged as other", 
+                            "{} should tagged as none entity"]
         else:
             raise NotImplementedError
-    elif dataset_name == 'mit_m.10_shot':
+    elif dataset_name == 'MIT_M':
         entity_dict = {0: "ACTOR", 1: "YEAR", 2: "TITLE", 3: "GENRE", 4: "DIRECTOR", 5: "SONG", 6: "PLOT", 7: "REVIEW", 8: "CHARACTER", 9: "RATING", 10: "RATINGS_AVERAGE", 11: "TRAILER", 12: "O"}
         if te == 'te1':
-            template_list = ["{} is an actor entity .",
-                             "{} is a year entity .", 
-                             "{} is a title entity .",
-                             "{} is a genre entity .", 
-                             "{} is a director entity .", 
-                             "{} is a song entity .", 
-                             "{} is a plot entity .", 
-                             "{} is a review entity .", 
-                             "{} is a character entity .", 
-                             "{} is a rating entity .", 
-                             "{} is a ratings average entity .", 
-                             "{} is a trailer entity .", 
-                             "{} is not a named entity ."]
+            template_list = ["{} is an actor entity",
+                             "{} is a year entity", 
+                             "{} is a title entity",
+                             "{} is a genre entity", 
+                             "{} is a director entity", 
+                             "{} is a song entity", 
+                             "{} is a plot entity", 
+                             "{} is a review entity", 
+                             "{} is a character entity", 
+                             "{} is a rating entity", 
+                             "{} is a ratings average entity", 
+                             "{} is a trailer entity", 
+                             "{} is not a named entity"]
         else:
-            raise NotImplementedError
-        
+            raise NotImplementedError     
     elif dataset_name == 'MIT_MM':
         entity_dict = {0: "actor", 1: "year", 2: "title", 3: "genre", 4: "director", 5: "song", 6: "plot", 7: "review", 8: "character", 9: "rating", 10: "ratings_average", 11: "trailer", 12: "opinion", 13: "award", 14: "origin", 15: "soundtrack", 16: "relationship", 17: "character_name", 18: "quote", 19: "O"}
         if te == 'te1':
-            template_list = ["{} is an actor entity .",
-                             "{} is a year entity .", 
-                             "{} is a title entity .",
-                             "{} is a genre entity .", 
-                             "{} is a director entity .", 
-                             "{} is a song entity .", 
-                             "{} is a plot entity .", 
-                             "{} is a review entity .", 
-                             "{} is a character entity .", 
-                             "{} is a rating entity .", 
-                             "{} is a ratings average entity .", 
-                             "{} is a trailer entity .", 
-                             "{} is an opinion entity .", 
-                             "{} is an award entity .",
-                             "{} is an origin entity .",
-                             "{} is a soundtrack entity .",
-                             "{} is a relationship entity .",
-                             "{} is a character name entity .",
-                             "{} is a quote entity .",
-                             "{} is not a named entity ."]
+            template_list = ["{} is an actor entity",
+                             "{} is a year entity", 
+                             "{} is a title entity",
+                             "{} is a genre entity", 
+                             "{} is a director entity", 
+                             "{} is a song entity", 
+                             "{} is a plot entity", 
+                             "{} is a review entity", 
+                             "{} is a character entity", 
+                             "{} is a rating entity", 
+                             "{} is a ratings average entity", 
+                             "{} is a trailer entity", 
+                             "{} is an opinion entity", 
+                             "{} is an award entity",
+                             "{} is an origin entity",
+                             "{} is a soundtrack entity",
+                             "{} is a relationship entity",
+                             "{} is a character name entity",
+                             "{} is a quote entity",
+                             "{} is not a named entity"]
         else:
             raise NotImplementedError
     elif dataset_name == 'MIT_R':
         entity_dict = {0: "Rating", 1: "Amenity", 2: "Location", 3: "Restaurant_Name", 4: "Price", 5: "Hours", 6: "Dish", 7: "Cuisine", 8: "O"}
         if te == 'te1':
-            template_list = ["{} is a rating entity .",
-                             "{} is an amenity entity .", 
-                             "{} is a location entity .",
-                             "{} is a restaurant name entity .", 
-                             "{} is a price entity .", 
-                             "{} is a hours entity .", 
-                             "{} is a dish entity .", 
-                             "{} is a cuisine entity .", 
-                             "{} is not a named entity ."]
+            template_list = ["{} is a rating entity",
+                             "{} is an amenity entity", 
+                             "{} is a location entity",
+                             "{} is a restaurant name entity", 
+                             "{} is a price entity", 
+                             "{} is a hours entity", 
+                             "{} is a dish entity", 
+                             "{} is a cuisine entity", 
+                             "{} is not a named entity"]
         else:
             raise NotImplementedError
     else:
@@ -203,8 +202,8 @@ def read_data(dataset_name, meta_task_num, data_dir_path, K, te, have_dev, train
             eval_df = pd.DataFrame(eval_data, columns=["input_text", "target_text"])
         else:
             eval_df = train_df
-    elif dataset_name == 'mit_m.10_shot':
-        train_file_path = data_dir_path + dataset_name + '/train' + str(meta_task_num) + '.csv'
+    elif dataset_name == 'MIT_M':
+        train_file_path = os.path.join(data_dir_path, dataset_name, 'mit_m.' + str(K) + '_shot', 'train' + str(meta_task_num) + '.csv')
         eval_file_path = train_file_path
         train_data = pd.read_csv(train_file_path, sep=',').values.tolist()
         train_df = pd.DataFrame(train_data, columns=["input_text", "target_text", "O-entity"])

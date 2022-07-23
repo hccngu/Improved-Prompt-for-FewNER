@@ -7,6 +7,7 @@ import logging
 import argparse
 from utils_metrics import get_entities_bio, f1_score, classification_report
 from transformers import BartForConditionalGeneration, BartTokenizer, BartConfig
+from BartModel import BartForConditionalGenerationDoubleDecoder
 import torch
 import torch.nn as nn
 import time
@@ -19,6 +20,8 @@ from best_model import Seq2SeqModel
 logging.basicConfig(level=logging.INFO)
 transformers_logger = logging.getLogger("transformers")
 transformers_logger.setLevel(logging.WARNING)
+from transformers import logging as lg
+lg.set_verbosity_error()
 # from inference import InputExample, prediction, cal_time
 import matplotlib.pyplot as plt
 plt.rcParams['font.sans-serif'] = ['SimHei']  # 用来正常显示中文标签
@@ -279,7 +282,7 @@ def main():
     parser.add_argument('--K', default=10, type=int, help='K-shot')
     
     # read_data
-    parser.add_argument('--dataset', default='MIT_R', help='[cnoll2003, mit_m, MIT_MM, MIT_R, snips]')
+    parser.add_argument('--dataset', default='MIT_R', help='[cnoll2003, MIT_M, MIT_MM, MIT_R, snips]')
     parser.add_argument('--data_dir', default='/home/hadoop-aipnlp/dolphinfs/hdd_pool/data/hanchengcheng02/FewNER-explore/templateNER-main/data/')
     parser.add_argument('--have_dev', default=True, help='have dev set or not')
     parser.add_argument('--meta_task_num', default=0, type=int, help='meta task number')
@@ -287,7 +290,7 @@ def main():
     # model config
     # parser.add_argument('--encoder_decoder_type', default='gpt2', help='model_classes [bart, gpt2]')
     # parser.add_argument('--encoder_decoder_name', default='/home/hadoop-aipnlp/dolphinfs/hdd_pool/data/hanchengcheng02/FewNER-explore/templateNER-main/gpt2', help='model_path [bart, gpt2]')
-    parser.add_argument('--encoder_decoder_type', default='bart', help='model_classes [bart, gpt2]')
+    parser.add_argument('--encoder_decoder_type', default='bart', help='model_classes [bart, bart2decoder, gpt2]')
     parser.add_argument('--encoder_decoder_name', default='/home/hadoop-aipnlp/dolphinfs/hdd_pool/data/hanchengcheng02/FewNER-explore/templatener/bart-large', help='model_path [bart, gpt2]')
     parser.add_argument('--best_model_path', default='/home/hadoop-aipnlp/dolphinfs/hdd_pool/data/hanchengcheng02/FewNER-explore/templateNER-main/outputs/new_start_best_model_mit_r-MIT_R--1-te1-seed-4-1658095533733', help='pretrained best model path')
     parser.add_argument('--do_train', default=False, action='store_true', help='train or not')
@@ -295,8 +298,12 @@ def main():
     parser.add_argument('--CM_mode', default='layer_norm', help='CM_mode, [softmax, 1/softmax, log_softmax, 1/CM, 1/CM_softmax, layer_bias]')
     parser.add_argument('--ln_bias', default=1, type=int, help='When CM_mode is layer norm, it can control layer norm bias.')
     parser.add_argument('--max_entity_length', default=5, type=int, help='max entity length')
+    parser.add_argument('--lr', default=4e-5, type=float, help='learning rate, default=4e-5')
+    # parser.add_argument('--use_siamese_decoder', default=True, action='store_true', help='use siamese decoder or not')
     args = parser.parse_args()
 
+    # if args.do_train == True:
+    #     print('Training...')
 
     # set_value
     DATASET = args.dataset
@@ -316,6 +323,8 @@ def main():
     META_TASK_NUM = args.meta_task_num
     K = args.K
     USE_CM = args.use_cm_or_not
+    LR = args.lr
+    # USE_SD = args.use_siamese_decoder
 
     template_list, entity_dict = set_template(DATASET, TEMPLATE)
     
@@ -325,7 +334,7 @@ def main():
         train_df, eval_df = read_data(DATASET, META_TASK_NUM, DATA_DIR, K, TEMPLATE, HAVE_DEV, TRAIN_SAMPLE_NUMBER, SEED)
 
         # set save_model_path
-        file_dir = '-'.join([SAVE_PREFIX, DATASET, str(TRAIN_SAMPLE_NUMBER), TEMPLATE, 'seed', str(SEED), str(int(round(time.time() * 1000)))])
+        file_dir = '-'.join([SAVE_PREFIX, EDT, DATASET, str(TRAIN_SAMPLE_NUMBER), TEMPLATE, 'seed', str(SEED), str(META_TASK_NUM), '-shot', str(int(round(time.time() * 1000)))])
         best_model_path = "/home/hadoop-aipnlp/dolphinfs/hdd_pool/data/hanchengcheng02/FewNER-explore/templateNER-main/outputs/{}".format(file_dir)
         
         # model config
@@ -348,7 +357,9 @@ def main():
             "output_dir": "./exp/template",
             "best_model_dir": best_model_path,
             "learning_rate_MLP": 1e-3,
+            "learning_rate": LR,  # 4e-5
             "use_mlp": USE_MLP,
+            # "use_sd": USE_SD,
         }
 
         # Initialize model
@@ -368,18 +379,19 @@ def main():
         results = model.eval_model(eval_df)
 
         # Use the model for prediction
-        if DATASET == 'cnoll2003':
-            print(model.predict(["Japan began the defence of their Asian Cup title with a lucky 2-1 win against Syria in a Group C championship match on Friday."]))
-            print('Ground truth: Japan is a Location entity.')
-        elif 'mit_m' in DATASET:
-            print(model.predict(["are there any good romantic comedies out right now ?"]))
-            print('Ground truth: romantic comedies is a GENRE entity and right now is an YEAR entity.')
-        elif DATASET == 'MIT_MM':
-            print(model.predict(["what is a bronx tale rated ?"]))
-            print('Ground truth: bronx tale is a title entity and rated is a rating entity.')
-        elif DATASET == 'MIT_R':
-            print(model.predict(["does this chinese restaurant have private rooms ?"]))
-            print('Ground truth: chinese is a Cuisine entity and private rooms is an Amentity entity.')
+        if EDT != 'bart2decoder':
+            if DATASET == 'cnoll2003':
+                print(model.predict(["Japan began the defence of their Asian Cup title with a lucky 2-1 win against Syria in a Group C championship match on Friday."]))
+                print('Ground truth: Japan is a Location entity.')
+            elif DATASET == 'MIT_M':
+                print(model.predict(["are there any good romantic comedies out right now ?"]))
+                print('Ground truth: romantic comedies is a GENRE entity and right now is an YEAR entity.')
+            elif DATASET == 'MIT_MM':
+                print(model.predict(["what is a bronx tale rated ?"]))
+                print('Ground truth: bronx tale is a title entity and rated is a rating entity.')
+            elif DATASET == 'MIT_R':
+                print(model.predict(["does this chinese restaurant have private rooms ?"]))
+                print('Ground truth: chinese is a Cuisine entity and private rooms is an Amentity entity.')
 
         print("Training Finish and Testing Start...")
     else:
@@ -391,6 +403,10 @@ def main():
         tokenizer = BartTokenizer.from_pretrained(EDN)
         # input_TXT = "Japan began the defence of their Asian Cup title with a lucky 2-1 win against Syria in a Group C championship match on Friday ."
         model = BartForConditionalGeneration.from_pretrained(best_model_path)
+    elif EDT == 'bart2decoder':
+        tokenizer = BartTokenizer.from_pretrained(EDN)
+        # input_TXT = "Japan began the defence of their Asian Cup title with a lucky 2-1 win against Syria in a Group C championship match on Friday ."
+        model = BartForConditionalGenerationDoubleDecoder.from_pretrained(best_model_path)
     else:
         raise NotImplementedError
 
@@ -421,9 +437,9 @@ def main():
 
     if DATASET == 'cnoll2003':
         test_file_path = DATA_DIR + DATASET +'/test/test.txt'
-    elif DATASET == 'mit_m.10_shot':
-        test_file_path = DATA_DIR + DATASET +'/test' + str(META_TASK_NUM) + '.txt'
-    elif DATASET in ['MIT_MM', 'MIT_R']:
+    # elif DATASET == 'mit_m.10_shot':
+    #     test_file_path = DATA_DIR + DATASET +'/test' + str(META_TASK_NUM) + '.txt'
+    elif DATASET in ['MIT_M', 'MIT_MM', 'MIT_R']:
         test_file_path = os.path.join(DATA_DIR, DATASET, 'test.txt')
     else:
         raise NotImplementedError

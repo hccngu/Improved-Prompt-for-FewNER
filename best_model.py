@@ -22,6 +22,9 @@ from tqdm.auto import tqdm, trange
 # from modeling_blenderbot_small import BlenderbotSmallForConditionalGeneration
 from simpletransformers.config.model_args import Seq2SeqArgs
 from seq2seq_utils import Seq2SeqDataset, SimpleSummarizationDataset
+
+from BartModel import BartForConditionalGenerationDoubleDecoder
+
 from transformers import (
     AdamW,
     AutoConfig,
@@ -61,6 +64,7 @@ logger = logging.getLogger(__name__)
 MODEL_CLASSES = {
     "auto": (AutoConfig, AutoModel, AutoTokenizer),
     "bart": (BartConfig, BartForConditionalGeneration, BartTokenizer),
+    "bart2decoder": (BartConfig, BartForConditionalGenerationDoubleDecoder, BartTokenizer),
     "bert": (BertConfig, BertModel, BertTokenizer),
     "roberta": (RobertaConfig, RobertaModel, RobertaTokenizer),
     "gpt2": (GPT2Config, GPT2Model, GPT2Tokenizer)
@@ -158,10 +162,17 @@ class Seq2SeqModel:
         else:
             config_class, model_class, tokenizer_class = MODEL_CLASSES[encoder_type]
 
-        if encoder_decoder_type in ["bart", "gpt2"]:
+        if encoder_decoder_type in ["bart", "bart2decoder", "gpt2"]:
             self.model = model_class.from_pretrained(encoder_decoder_name)
             self.encoder_tokenizer = tokenizer_class.from_pretrained(encoder_decoder_name)
             self.decoder_tokenizer = self.encoder_tokenizer
+            if encoder_decoder_type == 'bart2decoder':
+                own_state = self.model.get_binary_decoder().state_dict()
+                for name, param in self.model.get_decoder().state_dict().items():
+                    if name not in own_state:
+                        print('There is some question about ' + name)
+                        continue
+                    own_state[name].copy_(param)
             self.config = self.model.config
         else:
             if encoder_decoder_name:
@@ -306,8 +317,24 @@ class Seq2SeqModel:
 
         no_decay = ["bias", "LayerNorm.weight"]
 
+        binary_optimizer_grouped_parameters = []
         optimizer_grouped_parameters = []
         custom_parameter_names = set()
+        binary_parameter_names = [
+            k
+            for k, p in model.named_parameters()
+            if 'binary' in k
+        ]
+        encoder_parameter_names = [
+            k
+            for k, p in model.named_parameters()
+            if 'model.encoder' in k
+        ]
+        decoder_parameter_names = [
+            k
+            for k, p in model.named_parameters()
+            if 'model.decoder' in k
+        ]
         for group in self.args.custom_parameter_groups:
             params = group.pop("params")
             custom_parameter_names.update(params)
@@ -336,6 +363,27 @@ class Seq2SeqModel:
             optimizer_grouped_parameters.append(group_d)
             optimizer_grouped_parameters.append(group_nd)
 
+        binary_optimizer_grouped_parameters.extend(
+            [
+                {
+                    "params": [
+                        p
+                        for n, p in model.named_parameters()
+                        if n not in custom_parameter_names and n not in decoder_parameter_names and not any(nd in n for nd in no_decay)
+                    ],
+                    "weight_decay": args.weight_decay,
+                },
+                {
+                    "params": [
+                        p
+                        for n, p in model.named_parameters()
+                        if n not in custom_parameter_names and n not in decoder_parameter_names and any(nd in n for nd in no_decay)
+                    ],
+                    "weight_decay": 0.0,
+                },
+            ]
+        )
+
         if not self.args.train_custom_parameters_only:
             optimizer_grouped_parameters.extend(
                 [
@@ -343,7 +391,7 @@ class Seq2SeqModel:
                         "params": [
                             p
                             for n, p in model.named_parameters()
-                            if n not in custom_parameter_names and not any(nd in n for nd in no_decay)
+                            if n not in custom_parameter_names and n not in binary_parameter_names and not any(nd in n for nd in no_decay)
                         ],
                         "weight_decay": args.weight_decay,
                     },
@@ -351,7 +399,7 @@ class Seq2SeqModel:
                         "params": [
                             p
                             for n, p in model.named_parameters()
-                            if n not in custom_parameter_names and any(nd in n for nd in no_decay)
+                            if n not in custom_parameter_names and n not in binary_parameter_names and any(nd in n for nd in no_decay)
                         ],
                         "weight_decay": 0.0,
                     },
@@ -362,8 +410,12 @@ class Seq2SeqModel:
         args.warmup_steps = warmup_steps if args.warmup_steps == 0 else args.warmup_steps
 
         # TODO: Use custom optimizer like with BertSum?
+        binary_optimizer = AdamW(binary_optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon)
         optimizer = AdamW(optimizer_grouped_parameters, lr=args.learning_rate, eps=args.adam_epsilon)
         # decay
+        binary_scheduler = get_linear_schedule_with_warmup(
+            binary_optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=t_total
+        )
         scheduler = get_linear_schedule_with_warmup(
             optimizer, num_warmup_steps=args.warmup_steps, num_training_steps=t_total
         )
@@ -398,6 +450,7 @@ class Seq2SeqModel:
 
         global_step = 0
         tr_loss, logging_loss = 0.0, 0.0
+        binary_tr_loss, binary_logging_loss = 0.0, 0.0
         model.zero_grad()
         train_iterator = trange(int(args.num_train_epochs), desc="Epoch", disable=args.silent, mininterval=0)
         epoch_number = 0
@@ -435,6 +488,10 @@ class Seq2SeqModel:
                 kwargs = {"eval_loss_MLP": [],
                           "eval_all_MLP_acc": [],
                           }
+            elif args.model_type == 'bart2decoder':
+                kwargs = {"binary_eval_loss": [],
+                          "binary_eval_acc": [],
+                          }
                 training_progress_scores = self._create_training_progress_scores(**kwargs)
             else:
                 training_progress_scores = self._create_training_progress_scores(**kwargs)
@@ -467,6 +524,10 @@ class Seq2SeqModel:
                 # batch = tuple(t.to(device) for t in batch)
 
                 inputs = self._get_inputs_dict(batch)  # 取输入转成dic
+                if args.model_type == 'bart2decoder':
+                    binary_inputs = self._get_inputs_dict_for_binary_classifier(batch)
+                    inputs['binary_decoder_input_ids'] = binary_inputs['decoder_input_ids']
+                    inputs['binary_labels'] = binary_inputs['labels']
                 if args.fp16:
                     with amp.autocast():
                         if self.args.model_type == 'gpt2':
@@ -475,10 +536,17 @@ class Seq2SeqModel:
                             outputs = model(**inputs, output_hidden_states=True)
                         # model outputs are always tuple in pytorch-transformers (see doc)
                         loss = outputs[0]
+                        if args.model_type == 'bart2decoder':
+                            binary_loss = outputs[1]
                 else:
                     outputs = model(**inputs, output_hidden_states=True)
                     # model outputs are always tuple in pytorch-transformers (see doc)
                     loss = outputs[0]
+                    if args.model_type == 'bart2decoder':
+                        binary_loss = outputs[1]
+                
+                # if args.use_sd == True:
+                #     loss = 0.5 * loss + 0.5 * binary_loss
                 
                 ##### MLP loss
                 if self.args.use_mlp == True:
@@ -512,9 +580,13 @@ class Seq2SeqModel:
 
                 if args.n_gpu > 1:
                     loss = loss.mean()  # mean() to average on multi-gpu parallel training
+                    if args.model_type == 'bart2decoder':
+                        binary_loss = binary_loss.mean()
                     if self.args.use_mlp == True:
                         loss_MLP = loss_MLP.mean()
                 current_loss = loss.item()
+                if args.model_type == 'bart2decoder':
+                    binary_current_loss = binary_loss.item()
                 if self.args.use_mlp == True:
                     current_loss_MLP = loss_MLP.item()
 
@@ -524,12 +596,19 @@ class Seq2SeqModel:
                         f"Epochs {epoch_number}/{args.num_train_epochs}. Running Loss: {current_loss:9.4f}. Running MLP_loss: {current_loss_MLP:9.4f}. current_MLP_acc:{current_acc_MLP:9.4f}. all_MLP_acc:{all_MLP_acc:9.4f}"
                         )
                     else:
-                        batch_iterator.set_description(
-                        f"Epochs {epoch_number}/{args.num_train_epochs}. Running Loss: {current_loss:9.4f}."
-                        )
+                        if args.model_type == 'bart2decoder':
+                            batch_iterator.set_description(
+                            f"Epochs {epoch_number}/{args.num_train_epochs}. Running Loss: {current_loss:9.4f}. Running Binary Loss: {binary_current_loss:9.4f}."
+                            )
+                        else:
+                            batch_iterator.set_description(
+                            f"Epochs {epoch_number}/{args.num_train_epochs}. Running Loss: {current_loss:9.4f}."
+                            )
 
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
+                    if args.model_type == 'bart2decoder':
+                        binary_loss = binary_loss / args.gradient_accumulation_steps
                     if self.args.use_mlp == True:
                         loss_MLP = loss_MLP / args.gradient_accumulation_steps
 
@@ -537,25 +616,43 @@ class Seq2SeqModel:
                     if self.args.use_mlp == True:
                         scaler.scale(loss).backward(retain_graph=True)
                     else:
-                        scaler.scale(loss).backward()
+                        if args.model_type == 'bart2decoder':
+                            scaler.scale(loss).backward(retain_graph=True)
+                            scaler.scale(binary_loss).backward()
+                        else:
+                            scaler.scale(loss).backward()
                 else:
                     if self.args.use_mlp == True:
                         loss.backward(retain_graph=True)
                     else:
-                        loss.backward()
+                        if args.model_type == 'bart2decoder':
+                            loss.backward(retain_graph=True)
+                            binary_loss.backward()
+                        else:
+                            loss.backward()
 
                 tr_loss += loss.item()
+                if args.model_type == 'bart2decoder':
+                    binary_tr_loss += binary_loss.item()
                 if (step + 1) % args.gradient_accumulation_steps == 0:
                     if args.fp16:
                         scaler.unscale_(optimizer)
+                        if args.model_type == 'bart2decoder':
+                            scaler.unscale_(binary_optimizer)
                     torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
 
                     if args.fp16:
                         scaler.step(optimizer)
+                        if args.model_type == 'bart2decoder':
+                            scaler.step(binary_optimizer)
                         scaler.update()
                     else:
                         optimizer.step()
+                        if args.model_type == 'bart2decoder':
+                            binary_optimizer.step()
                     scheduler.step()  # Update learning rate schedule
+                    if args.model_type == 'bart2decoder':
+                        binary_scheduler.step()
                     model.zero_grad()
 
                     if self.args.use_mlp == True:
@@ -570,15 +667,29 @@ class Seq2SeqModel:
                         # Log metrics
                         tb_writer.add_scalar("lr", scheduler.get_lr()[0], global_step)
                         tb_writer.add_scalar("loss", (tr_loss - logging_loss) / args.logging_steps, global_step)
+                        if args.model_type == 'bart2decoder':
+                            tb_writer.add_scalar("binary_loss", (binary_tr_loss - binary_logging_loss) / args.logging_steps, global_step)
                         logging_loss = tr_loss
+                        if args.model_type == 'bart2decoder':
+                            binary_logging_loss = binary_tr_loss
                         if args.wandb_project:
-                            wandb.log(
-                                {
-                                    "Training loss": current_loss,
-                                    "lr": scheduler.get_lr()[0],
-                                    "global_step": global_step,
-                                }
-                            )
+                            if args.model_type == 'bart2decoder':
+                                wandb.log(
+                                    {
+                                        "Training loss": current_loss,
+                                        "Training binary loss": binary_current_loss,
+                                        "lr": scheduler.get_lr()[0],
+                                        "global_step": global_step,
+                                    }
+                                )
+                            else:
+                                wandb.log(
+                                    {
+                                        "Training loss": current_loss,
+                                        "lr": scheduler.get_lr()[0],
+                                        "global_step": global_step,
+                                    }
+                                )
 
                     if args.save_steps > 0 and global_step % args.save_steps == 0:
                         # Save model checkpoint
@@ -805,6 +916,7 @@ class Seq2SeqModel:
             model = torch.nn.DataParallel(model)
 
         eval_loss = 0.0
+        binary_eval_loss = 0.0
         eval_loss_MLP = 0.0
         nb_eval_steps = 0
         eval_all_MLP_pred = []
@@ -817,9 +929,16 @@ class Seq2SeqModel:
             # batch = tuple(t.to(device) for t in batch)
 
             inputs = self._get_inputs_dict(batch)
+            if args.model_type == 'bart2decoder':
+                binary_inputs = self._get_inputs_dict_for_binary_classifier(batch)
+                inputs['binary_decoder_input_ids'] = binary_inputs['decoder_input_ids']
+                inputs['binary_labels'] = binary_inputs['labels']
             with torch.no_grad():
                 outputs = model(**inputs, output_hidden_states=True)
                 loss = outputs[0]
+                if args.model_type == 'bart2decoder':
+                    binary_loss = outputs[1]
+                    binary_eval_loss += binary_loss.mean().item()
                 eval_loss += loss.mean().item()
                 ##### MLP loss
                 if self.args.use_mlp == True:
@@ -857,6 +976,9 @@ class Seq2SeqModel:
 
         eval_loss = eval_loss / nb_eval_steps
         results["eval_loss"] = eval_loss
+        if args.model_type == 'bart2decoder':
+            binary_eval_loss = binary_eval_loss / nb_eval_steps
+            results["binary_eval_loss"] = binary_eval_loss
         if self.args.use_mlp == True:
             eval_loss = eval_loss_MLP / nb_eval_steps
             eval_all_MLP_acc = eval_MLP_true_count / eval_all_entites_count
@@ -890,27 +1012,49 @@ class Seq2SeqModel:
             model = torch.nn.DataParallel(model)
 
         eval_loss = 0.0
+        binary_eval_loss = 0.0
         nb_eval_steps = 0
         model.eval()
         correct, count = 0, 0
+        binary_correct, binary_count = 0, 0
         for batch in tqdm(eval_dataloader, disable=args.silent or silent, desc="Running Evaluation"):
             # batch = tuple(t.to(device) for t in batch)
             inputs = self._get_inputs_dict(batch)
+            if args.model_type == 'bart2decoder':
+                binary_inputs = self._get_inputs_dict_for_binary_classifier(batch)
+                inputs['binary_decoder_input_ids'] = binary_inputs['decoder_input_ids']
+                inputs['binary_labels'] = binary_inputs['labels']
             # print(inputs)
             with torch.no_grad():
                 outputs = model(**inputs)
                 loss = outputs[0]
+                if args.model_type == 'bart2decoder':
+                    binary_loss = outputs[1]
                 eval_loss += loss.mean().item()
-                decode_outputs = torch.argmax(outputs[1], dim=-1).view(-1)
+                if args.model_type == 'bart2decoder':
+                    binary_eval_loss += binary_loss.mean().item()
+                    decode_outputs = torch.argmax(outputs[2], dim=-1).view(-1)
+                    binary_decode_outputs = torch.argmax(outputs[3], dim=-1).view(-1)
+                else:
+                    decode_outputs = torch.argmax(outputs[1], dim=-1).view(-1)
                 labels = inputs["labels"].view(-1)
                 for i, j in zip(labels, decode_outputs):
                     if i == j and i != -100:
                         correct += 1
                     if i != -100:
                         count += 1
+                if args.model_type == 'bart2decoder':
+                    binary_labels = inputs["binary_labels"].view(-1)
+                    for i, j in zip(binary_labels, binary_decode_outputs):
+                        if i == j and i != -100:
+                            binary_correct += 1
+                        if i != -100:
+                            binary_count += 1
             nb_eval_steps += 1
 
         results["eval_acc"] = correct / count
+        if args.model_type == 'bart2decoder':
+            results["binary_eval_acc"] = binary_correct / binary_count
 
         return results
 
@@ -942,7 +1086,7 @@ class Seq2SeqModel:
                 )["input_ids"]
             input_ids = input_ids.to(self.device)
 
-            if self.args.model_type in ["bart", "marian", "blender", "blender-large"]:
+            if self.args.model_type in ["bart", "bart2decoder", "marian", "blender", "blender-large"]:
 
                 outputs = self.model.generate(
                     input_ids=input_ids,
@@ -1029,7 +1173,7 @@ class Seq2SeqModel:
                 )["input_ids"]
             input_ids = input_ids.to(self.device)
 
-            if self.args.model_type in ["bart", "marian", "blender", "blender-large"]:
+            if self.args.model_type in ["bart", "bart2decoder", "marian", "blender", "blender-large"]:
                 outputs = self.model.generate(
                     input_ids=input_ids,
                     num_beams=self.args.num_beams,
@@ -1153,7 +1297,7 @@ class Seq2SeqModel:
             CustomDataset = args.dataset_class
             return CustomDataset(encoder_tokenizer, decoder_tokenizer, args, data, mode)
         else:
-            if args.model_type in ["bart", "gpt2"]:
+            if args.model_type in ["bart", "bart2decoder", "gpt2"]:
                 return SimpleSummarizationDataset(encoder_tokenizer, self.args, data, mode)
             else:
                 return Seq2SeqDataset(encoder_tokenizer, decoder_tokenizer, self.args, data, mode,)
@@ -1191,11 +1335,11 @@ class Seq2SeqModel:
             model_to_save = model.module if hasattr(model, "module") else model
             self._save_model_args(output_dir)
 
-            if self.args.model_type in ["bart", "marian", "blender", "blender-large"]:
+            if self.args.model_type in ["bart", "bart2decoder", "bart2decoder", "marian", "blender", "blender-large"]:
                 os.makedirs(os.path.join(output_dir), exist_ok=True)
                 model_to_save.save_pretrained(output_dir)
                 self.config.save_pretrained(output_dir)
-                if self.args.model_type in ["bart", "blender", "blender-large"]:
+                if self.args.model_type in ["bart", "bart2decoder", "blender", "blender-large"]:
                     self.encoder_tokenizer.save_pretrained(output_dir)
             else:
                 os.makedirs(os.path.join(output_dir, "encoder"), exist_ok=True)
@@ -1246,7 +1390,7 @@ class Seq2SeqModel:
                 "decoder_input_ids": y_ids.to(device),
                 "lm_labels": lm_labels.to(device),
             }
-        elif self.args.model_type in ["blender", "bart", "blender-large", "gpt2"]:
+        elif self.args.model_type in ["blender", "bart", "bart2decoder", "blender-large", "gpt2"]:
             pad_token_id = self.encoder_tokenizer.pad_token_id
             source_ids, source_mask, y = batch["source_ids"], batch["source_mask"], batch["target_ids"]
             y_ids = y[:, :-1].contiguous()
@@ -1270,6 +1414,24 @@ class Seq2SeqModel:
             }
 
         return inputs
+
+
+    def _get_inputs_dict_for_binary_classifier(self, batch):
+        device = self.device
+        pad_token_id = self.encoder_tokenizer.pad_token_id
+        source_ids, source_mask, y = batch["source_ids"], batch["source_mask"], batch["binary_target_ids"]
+        y_ids = y[:, :-1].contiguous()
+        labels = y[:, 1:].clone()
+        labels[y[:, 1:] == pad_token_id] = -100
+        inputs = {
+            "input_ids": source_ids.to(device),
+            "attention_mask": source_mask.to(device),
+            "decoder_input_ids": y_ids.to(device),
+            "labels": labels.to(device),
+        }
+        return inputs
+
+
 
     def _save_model_args(self, output_dir):
         os.makedirs(output_dir, exist_ok=True)
