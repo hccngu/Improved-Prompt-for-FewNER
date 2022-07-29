@@ -73,7 +73,7 @@ class Seq2SeqDataset(Dataset):
 
 
 def preprocess_data_bart(data):
-    input_text, target_text, tokenizer, args = data
+    input_text, target_text, binary_target_text, tokenizer, args = data
 
     input_ids = tokenizer.batch_encode_plus(
         [input_text], max_length=args.max_seq_length, padding='max_length', truncation=True, return_tensors="pt",
@@ -83,17 +83,44 @@ def preprocess_data_bart(data):
         [target_text], max_length=args.max_seq_length, padding='max_length', truncation=True, return_tensors="pt"
     )
 
-    if args.model_type == 'bart2decoder':
-        output_words = target_text.split()
-        is_index = len(output_words) - output_words[::-1].index('is') - 1
-        entity_words = ' '.join(output_words[:is_index])
-        if output_words[-4] == 'not':
-            binary_target_text = entity_words + ' is not a named entity'
+    if args.use_be is True:
+        if args.te == 'te1':
+            if target_text.split()[-4] == 'not':
+                for i, index in enumerate(target_ids["input_ids"][0]):
+                    if index not in [0, 1, 2]:
+                        target_ids["input_ids"][0][i] = 1
+        elif args.te in ['te2', 'te3', 'te4']:
+            if target_text.split()[-2] == 'none':
+                for i, index in enumerate(target_ids["input_ids"][0]):
+                    if index not in [0, 1, 2]:
+                        target_ids["input_ids"][0][i] = 1
         else:
-            binary_target_text = entity_words + ' is a named entity'
-        binary_target_ids = tokenizer.batch_encode_plus(
-        [binary_target_text], max_length=args.max_seq_length, padding='max_length', truncation=True, return_tensors="pt"
-        )
+            raise NotImplementedError
+
+    if args.model_type == 'bart2decoder':
+        if args.use_be:
+            binary_target_ids = tokenizer.batch_encode_plus(
+            [binary_target_text], max_length=args.max_seq_length, padding='max_length', truncation=True, return_tensors="pt"
+            )
+        else:
+            output_words = target_text.split()
+            is_index = len(output_words) - output_words[::-1].index('is') - 1
+            entity_words = ' '.join(output_words[:is_index])
+            if args.te in ['te2', 'te3', 'te4']:
+                if output_words[-2] == 'none':
+                    binary_target_text = entity_words + ' is not a named entity'
+                else:
+                    binary_target_text = entity_words + ' is a named entity'
+            elif args.te == 'te1':
+                if output_words[-4] == 'not':
+                    binary_target_text = entity_words + ' is not a named entity'
+                else:
+                    binary_target_text = entity_words + ' is a named entity'
+            else:
+                raise NotImplementedError
+            binary_target_ids = tokenizer.batch_encode_plus(
+            [binary_target_text], max_length=args.max_seq_length, padding='max_length', truncation=True, return_tensors="pt"
+            )
         return {
             "source_ids": input_ids["input_ids"].squeeze(),
             "source_mask": input_ids["attention_mask"].squeeze(),
@@ -126,8 +153,8 @@ class SimpleSummarizationDataset(Dataset):
         else:
             logger.info(" Creating features from dataset file at %s", args.cache_dir)
         data = [
-            (input_text, target_text, tokenizer, args)
-            for input_text, target_text in zip(data["input_text"], data["target_text"])
+            (input_text, target_text, binary_target_text, tokenizer, args)
+            for input_text, target_text, binary_target_text in zip(data["input_text"], data["target_text"], data["O-entity"])
         ]
 
         if args.use_multiprocessing:

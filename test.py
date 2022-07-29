@@ -5,7 +5,7 @@ import os
 import numpy as np
 import logging
 import argparse
-from utils_metrics import get_entities_bio, f1_score, classification_report
+from utils_metrics import get_entities_bio, f1_score, classification_report, other_score
 from transformers import BartForConditionalGeneration, BartTokenizer, BartConfig, TrainingArguments
 import torch
 import torch.nn as nn
@@ -159,10 +159,14 @@ def template_entity(words, input_TXT, start, template_list, entity_dict, tokeniz
 
 
 def binary_template_entity(words, input_TXT, start, template_list, entity_dict, tokenizer, model, device, args, mlp=None, CM=None):
+    end = start + (len(words[0].split())-1)
     words_length = len(words)
     
     # binary_template
-    binary_template_list = ['{} is an entity', '{} is not an entity']
+    if args.new_binary_te:
+        binary_template_list = ['{} is a named entity', 'The entity type of {} is none entity']
+    else:
+        binary_template_list = ['{} is a named entity', '{} is not a named entity']
     binary_entity_dict = {0: 'entity', 1: 'O'}
     binary_num_label = len(binary_template_list)
     binary_temp_list = []
@@ -174,11 +178,14 @@ def binary_template_entity(words, input_TXT, start, template_list, entity_dict, 
     # output_ids[:, 0] = 2  # 为什么变成2
     binary_output_length_list = [0]*binary_num_label*words_length
 
-    if args.te == 'te1':
+    if args.te in ['te1', 'te2', 'te3', 'te4']:
         for i in range(len(binary_temp_list)//binary_num_label):
             binary_base_length = ((tokenizer(binary_temp_list[i * binary_num_label], return_tensors='pt', padding=True, truncation=True)['input_ids']).shape)[1] - 2  # 为什么-4
             binary_output_length_list[i*binary_num_label:i*binary_num_label+ binary_num_label] = [binary_base_length]*binary_num_label
-            binary_output_length_list[i*binary_num_label+binary_num_label-1] += 1
+            if args.new_binary_te:
+                binary_output_length_list[i*binary_num_label+binary_num_label-1] += 3
+            else:
+                binary_output_length_list[i*binary_num_label+binary_num_label-1] += 1
     else:
         raise NotImplementedError
 
@@ -200,15 +207,20 @@ def binary_template_entity(words, input_TXT, start, template_list, entity_dict, 
     # output_ids[:, 0] = 2  # 为什么变成2
     output_length_list = [0]*num_label*words_length
 
-    if args.te == 'te1':
+    if args.te in ['te1', 'te2', 'te4']:
         for i in range(len(temp_list)//num_label):
             base_length = ((tokenizer(temp_list[i * num_label], return_tensors='pt', padding=True, truncation=True)['input_ids']).shape)[1] - 2  # 为什么-4
             output_length_list[i*num_label:i*num_label+ num_label] = [base_length]*num_label
-            output_length_list[i*num_label+num_label-1] += 1
+            if not args.use_be_or_not:
+                output_length_list[i*num_label+num_label-1] += 1
+    elif args.te == 'te3':
+        for i in range(len(temp_list)//num_label):
+            base_length = ((tokenizer(temp_list[i * num_label], return_tensors='pt', padding=True, truncation=True)['input_ids']).shape)[1] - 2  # 为什么-4
+            output_length_list[i*num_label:i*num_label+ num_label] = [base_length]*num_label
     else:
         raise NotImplementedError
     
-    if args.dataset == 'mit_m.10_shot':
+    if args.dataset == 'MIT_M':
         output_length_list[10] += 1
     elif args.dataset == 'MIT_MM':
         output_length_list[10] += 1
@@ -222,17 +234,6 @@ def binary_template_entity(words, input_TXT, start, template_list, entity_dict, 
         origin_output = model(input_ids=input_ids.to(device), decoder_input_ids=output_ids[:, :output_ids.shape[1] - 2].to(device), binary_decoder_input_ids=binary_output_ids[:, :binary_output_ids.shape[1] - 2].to(device), output_hidden_states=True, Training=False)
         output = origin_output[0]
         binary_output = origin_output[1]
-        for i in range(output_ids.shape[1] - 2):  # 为什么-3
-            # print(input_ids.shape)
-            logits = output[:, i, :]
-            logits = logits.softmax(dim=1)
-            # values, predictions = logits.topk(1,dim = 1)
-            logits = logits.to('cpu').numpy()
-            # print(output_ids[:, i+1].item())
-            for j in range(0, num_label*words_length):
-                if i < output_length_list[j]:
-                    score[j] = score[j] * logits[j][int(output_ids[j][i + 1])]
-        
         for i in range(binary_output_ids.shape[1] - 2):  # 为什么-3
             # print(input_ids.shape)
             binary_logits = binary_output[:, i, :]
@@ -244,7 +245,34 @@ def binary_template_entity(words, input_TXT, start, template_list, entity_dict, 
                 if i < binary_output_length_list[j]:
                     binary_score[j] = binary_score[j] * binary_logits[j][int(binary_output_ids[j][i + 1])]
 
-    end = start + (len(words[0].split())-1)
+        if args.use_be_or_not:
+            binary_pred = binary_entity_dict[binary_score.index(max(binary_score))]
+            if binary_pred == 'O':
+                return [start, end, 'O', max(binary_score), binary_score, binary_score]  # , mlp_logits.cpu().numpy().tolist()]  #[start_index,end_index,label,score,[score_list],[mlp_logits]]
+            else:
+                for i in range(output_ids.shape[1] - 2):  # 为什么-3
+                    # print(input_ids.shape)
+                    logits = output[:, i, :]
+                    logits = logits.softmax(dim=1)
+                    # values, predictions = logits.topk(1,dim = 1)
+                    logits = logits.to('cpu').numpy()
+                    # print(output_ids[:, i+1].item())
+                    for j in range(0, num_label*words_length):
+                        if i < output_length_list[j]:
+                            score[j] = score[j] * logits[j][int(output_ids[j][i + 1])]
+                return [start, end, entity_dict[(score.index(max(score))%num_label)], max(score), score, binary_score]  # , mlp_logits.cpu().numpy().tolist()]  #[start_index,end_index,label,score,[score_list],[mlp_logits]]
+        
+        for i in range(output_ids.shape[1] - 2):  # 为什么-3
+            # print(input_ids.shape)
+            logits = output[:, i, :]
+            logits = logits.softmax(dim=1)
+            # values, predictions = logits.topk(1,dim = 1)
+            logits = logits.to('cpu').numpy()
+            # print(output_ids[:, i+1].item())
+            for j in range(0, num_label*words_length):
+                if i < output_length_list[j]:
+                    score[j] = score[j] * logits[j][int(output_ids[j][i + 1])]
+        
     # add mlp
     if args.use_mlp_or_not == True:
         mlp.to(device)
@@ -295,9 +323,9 @@ def test(examples, template_list, entity_dict, tokenizer, model, device, args, m
     num_01 = len(examples)
     num_point = 0
     start = time.time()
-    # if args.encoder_decoder_type == 'bart2decoder':
-        # entity_dict.pop(len(template_list)-1)
-        # template_list = template_list[:-1]
+    if args.use_be_or_not:
+        entity_dict.pop(len(template_list)-1)
+        template_list = template_list[:-1]
     for example in examples:
         sources = string.join(example.words)
         words = sources.strip().split(' ')
@@ -323,7 +351,10 @@ def test(examples, template_list, entity_dict, tokenizer, model, device, args, m
     results = {
         "f1": f1_score(true_entities, pred_entities)
     }
+    binary_r, pred_label_score = other_score(true_entities, pred_entities)
     print(results["f1"])
+    print('有{}%实体边界被抽取成功'.format(round(binary_r*100, 2)))
+    print('在抽取成功的实体中，被正确预测其类别的有{}%'.format(round(pred_label_score*100, 2)))
 
     return logits_list
 

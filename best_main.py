@@ -299,7 +299,15 @@ def main():
     parser.add_argument('--ln_bias', default=1, type=int, help='When CM_mode is layer norm, it can control layer norm bias.')
     parser.add_argument('--max_entity_length', default=5, type=int, help='max entity length')
     parser.add_argument('--lr', default=4e-5, type=float, help='learning rate, default=4e-5')
-    # parser.add_argument('--use_siamese_decoder', default=True, action='store_true', help='use siamese decoder or not')
+    parser.add_argument('--use_be_or_not', default=False, action='store_true', help='Boundary expansion')
+    
+    
+    # debug
+    parser.add_argument('--debug_optim', default=False, action='store_true', help='binary optim->encoder+binary_decoder, optim->decoder')
+    parser.add_argument('--partOfTest', default=-1, type=int, help='part of test for debug')
+    # parser.add_argument('--debug_binary_template', default=False, action='store_true', help='binary template, sth is a named entity/ sth belongs to none category')
+    parser.add_argument('--new_binary_te', default=False, action='store_true', help='binary template, sth is a named entity/ The entity type of sth is none entity')
+
     args = parser.parse_args()
 
     # if args.do_train == True:
@@ -322,8 +330,10 @@ def main():
     BEST_MODEL_PATH = args.best_model_path
     META_TASK_NUM = args.meta_task_num
     K = args.K
+    TE = args.te
     USE_CM = args.use_cm_or_not
     LR = args.lr
+    USE_BE = args.use_be_or_not
     # USE_SD = args.use_siamese_decoder
 
     template_list, entity_dict = set_template(DATASET, TEMPLATE)
@@ -331,7 +341,7 @@ def main():
     
     if DO_TRAIN == True:
         # read_data
-        train_df, eval_df = read_data(DATASET, META_TASK_NUM, DATA_DIR, K, TEMPLATE, HAVE_DEV, TRAIN_SAMPLE_NUMBER, SEED)
+        train_df, eval_df = read_data(DATASET, META_TASK_NUM, DATA_DIR, K, TEMPLATE, HAVE_DEV, TRAIN_SAMPLE_NUMBER, SEED, USE_BE)
 
         # set save_model_path
         file_dir = '-'.join([SAVE_PREFIX, EDT, DATASET, str(TRAIN_SAMPLE_NUMBER), TEMPLATE, 'seed', str(SEED), str(META_TASK_NUM), '-shot', str(int(round(time.time() * 1000)))])
@@ -359,6 +369,10 @@ def main():
             "learning_rate_MLP": 1e-3,
             "learning_rate": LR,  # 4e-5
             "use_mlp": USE_MLP,
+            "use_be": USE_BE,
+            "debug_optim": args.debug_optim,
+            "te": TE,
+            # "debug_binary_template": args.debug_binary_template,
             # "use_sd": USE_SD,
         }
 
@@ -443,7 +457,10 @@ def main():
         test_file_path = os.path.join(DATA_DIR, DATASET, 'test.txt')
     else:
         raise NotImplementedError
-    test_examples = read_test_data(test_file_path)
+    if args.partOfTest != -1:
+        test_examples = read_test_data(test_file_path, part_num=args.partOfTest)
+    else:
+        test_examples = read_test_data(test_file_path)
     if USE_MLP == True:
         logits_list = test(test_examples, template_list, entity_dict, tokenizer, model, device, args, mlp)
     elif USE_CM == True:

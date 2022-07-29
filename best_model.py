@@ -166,7 +166,7 @@ class Seq2SeqModel:
             self.model = model_class.from_pretrained(encoder_decoder_name)
             self.encoder_tokenizer = tokenizer_class.from_pretrained(encoder_decoder_name)
             self.decoder_tokenizer = self.encoder_tokenizer
-            if encoder_decoder_type == 'bart2decoder':
+            if encoder_decoder_type == 'bart2decoder':  # init the second decoder
                 own_state = self.model.get_binary_decoder().state_dict()
                 for name, param in self.model.get_decoder().state_dict().items():
                     if name not in own_state:
@@ -385,26 +385,48 @@ class Seq2SeqModel:
         )
 
         if not self.args.train_custom_parameters_only:
-            optimizer_grouped_parameters.extend(
-                [
-                    {
-                        "params": [
-                            p
-                            for n, p in model.named_parameters()
-                            if n not in custom_parameter_names and n not in binary_parameter_names and not any(nd in n for nd in no_decay)
-                        ],
-                        "weight_decay": args.weight_decay,
-                    },
-                    {
-                        "params": [
-                            p
-                            for n, p in model.named_parameters()
-                            if n not in custom_parameter_names and n not in binary_parameter_names and any(nd in n for nd in no_decay)
-                        ],
-                        "weight_decay": 0.0,
-                    },
-                ]
-            )
+            if args.debug_optim:
+                optimizer_grouped_parameters.extend(
+                    [
+                        {
+                            "params": [
+                                p
+                                for n, p in model.named_parameters()
+                                if n not in custom_parameter_names and n in decoder_parameter_names and not any(nd in n for nd in no_decay)
+                            ],
+                            "weight_decay": args.weight_decay,
+                        },
+                        {
+                            "params": [
+                                p
+                                for n, p in model.named_parameters()
+                                if n not in custom_parameter_names and n in decoder_parameter_names and any(nd in n for nd in no_decay)
+                            ],
+                            "weight_decay": 0.0,
+                        },
+                    ]
+                )
+            else:
+                optimizer_grouped_parameters.extend(
+                    [
+                        {
+                            "params": [
+                                p
+                                for n, p in model.named_parameters()
+                                if n not in custom_parameter_names and n not in binary_parameter_names and not any(nd in n for nd in no_decay)
+                            ],
+                            "weight_decay": args.weight_decay,
+                        },
+                        {
+                            "params": [
+                                p
+                                for n, p in model.named_parameters()
+                                if n not in custom_parameter_names and n not in binary_parameter_names and any(nd in n for nd in no_decay)
+                            ],
+                            "weight_decay": 0.0,
+                        },
+                    ]
+                )
 
         warmup_steps = math.ceil(t_total * args.warmup_ratio)
         args.warmup_steps = warmup_steps if args.warmup_steps == 0 else args.warmup_steps

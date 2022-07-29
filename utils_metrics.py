@@ -211,6 +211,21 @@ def f1_score(true_entities, pred_entities):
 
     return score
 
+def other_score(true_entities, pred_entities):
+    nb_correct = len(true_entities & pred_entities)
+    nb_pred = len(pred_entities)
+    nb_true = len(true_entities)
+    count=0
+    for pred, start, end in pred_entities:
+        for i, (real_pred, real_start, real_end) in enumerate(true_entities):
+            if start == real_start and end == real_end:
+                count += 1
+                true_entities.remove((real_pred, real_start, real_end))
+                break
+    binary_r = count / nb_true if nb_true > 0 else 0
+    pred_label_score = nb_correct / count if nb_true > 0 else 0
+    return binary_r, pred_label_score
+
 
 def precision_score(true_entities, pred_entities):
     """Compute the precision."""
